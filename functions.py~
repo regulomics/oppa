@@ -1,0 +1,270 @@
+import scipy.stats
+import numpy,string
+from sklearn.decomposition.pca import PCA
+
+THR=20
+def normalize(m):
+    s=m.shape[0]
+    means=numpy.zeros((s))
+    for d in range(s):
+        means[d]=numpy.mean([m[i,i+d] for i in range(s-d)])
+    res=numpy.zeros(m.shape)
+    for i in range(s):
+        for j in range(s):
+            res[i,j]=m[i,j]/means[abs(i-j)]
+    return numpy.nan_to_num(res)
+
+def log(m):
+    res=numpy.zeros(m.shape)
+    for i in range(m.shape[0]):
+        for j in range(m.shape[0]):
+            res[i,j]=math.log(m[i,j])
+    return res
+
+def env(m,i,j,k):
+    return m[i-k:i+k+1,j-k:j+k+1]
+
+def smooth(m,width=1):
+    res=numpy.zeros(m.shape)
+    for i in range(width,m.shape[0]-width):
+        for j in range(width,m.shape[0]-width):
+            res[i,j]=numpy.mean(env(m,i,j,width))
+    return res
+
+def smooth_fast(m,width=1):
+    import scipy.ndimage
+    res=numpy.zeros(m.shape)
+    scipy.ndimage.uniform_filter(m,output=res,size=2*width+1)
+    return res
+
+def pearson(m):
+    C=numpy.zeros(m.shape)
+    for i in range(m.shape[0]):
+        for j in range(i+1):
+            C[i,j]=scipy.stats.pearsonr(m[i],m[j])[0]
+            C[j,i]=C[i,j]
+        if i%100==0:
+            print i
+    C=numpy.nan_to_num(C)
+    return C
+
+def pearson_fast(m):
+    C=numpy.cov(m)
+    for i in range(m.shape[0]): # from cov(x,y) to pearson(x,y)
+        for j in range(i):
+            C[i,j]=C[i,j]/numpy.sqrt(C[i,i])/numpy.sqrt(C[j,j])
+            C[j,i]=C[i,j]
+    for i in range(m.shape[0]):
+        C[i,i]=1.0 #diagonal .0
+    return numpy.nan_to_num(C)
+            
+def sum_triangle(m,i,j): #sum the triangle close to the diagonal
+    r=0.0
+    for x in range(i+1,j+1):
+        r+=numpy.sum(m[i+1:x,x])
+    return r
+
+def min_triangle(m,i,j): #min of the triangle close to the diagonal
+    r=1.0
+    for x in range(i+1,j+1):
+        r=min(r,numpy.min(m[i:x,x]))
+    return r
+
+def sum_rectangle(m,i,j,vec): #sum the rectangle above the triangle using the "previous" vector
+    if i==0:
+        return 0
+    r=0.0
+    for x in range(i+1,j+1):
+        try:
+            r=r-numpy.dot(m[0:i+1,x],vec)
+        except:
+            print "rect",i,j,vec,r,m[0:i+1,i+1:j+1],vec.shape,     m[0:i+1,i+1:j+1].shape
+            aaa=bbb # tr
+    return r
+    
+def nan_domains(m,ds):
+    for b,e in ds:
+        for i in range(b,e+1):
+            m[b,i]=nan
+            m[i,e]=nan
+
+def nan_domains_lower(m,ds):
+    for b,e in ds:
+        for i in range(b,e+1):
+            m[i,b]=nan
+            m[e,i]=nan
+
+def read_doms(f):
+    return [map(int,l.strip().split()[-2:]) for l in f]
+    
+def offset_doms(doms,beg,end,ms=3):
+    res=[]
+    for b,e in doms:
+        if e>=end or b<beg or e-b<ms:
+            continue
+        res.append([b-beg,e-beg])
+    return res
+
+def hier_clust(N,abs_thr=0.3,left_cut=.95,right_cut=0.05,cur_clusts=None,left=1):
+    import pylab
+    C=pearson_fast(N)
+    cur_clusts=[(i,i,(1.0,[])) for i in range(C.shape[0])]
+    cur_cors=[C[i,i+1] for i in range(C.shape[0]-1)]        
+    thrs=[]
+    cur_thr=max(cur_cors)
+    while cur_thr>abs_thr:
+        pos=numpy.argmax(cur_cors)
+        if pos==0:
+            new_clust=(cur_clusts[0][0],cur_clusts[1][1],(cur_thr,cur_clusts[:2]))
+            cur_clusts=[new_clust]+cur_clusts[2:]
+            cur_cors=[min_triangle(C,cur_clusts[pos][0],cur_clusts[pos+1][1])]+cur_cors[2:]
+        elif pos<len(cur_cors)-2:
+            new_clust=(cur_clusts[pos][0],cur_clusts[pos+1][1],(cur_thr,cur_clusts[pos:pos+2]))
+            cur_clusts=cur_clusts[:pos]+[new_clust]+cur_clusts[pos+2:]
+            cur_cors=cur_cors[:pos-1]+[min_triangle(C,cur_clusts[pos-1][0],cur_clusts[pos][1]),min_triangle(C,cur_clusts[pos][0],cur_clusts[pos+1][1])]+cur_cors[pos+2:]
+        else:
+            print cur_clusts[pos+1],cur_cors[pos]
+            new_clust=(cur_clusts[pos][0],cur_clusts[pos+1][1],(cur_thr,cur_clusts[pos:pos+2]))
+            cur_clusts=cur_clusts[:pos]+[new_clust]
+            cur_cors=cur_cors[:pos-1]+[min_triangle(C,cur_clusts[pos-1][0],cur_clusts[pos][1])]
+        thrs.append(cur_thr)
+        cur_thr=max(cur_cors)
+        #print pos, cur_clusts[:2],cur_cors[:2]
+        print len(cur_clusts),len(cur_cors)
+        if len(cur_clusts)-len(cur_cors)!=1:
+            print "PROBLEM!"
+            aaaa=bbbb
+    #now we have the clusters - where to break them
+    #first find begining and end of "reasonable area"
+    beg_i=left+1
+    while thrs[beg_i]>left_cut*thrs[left]:
+        beg_i+=1
+    end_i=len(thrs)-1
+    while thrs[end_i]<right_cut*thrs[left]:
+        end_i-=1
+    #is "reasonable area" long enough?
+    if beg_i+4>end_i:
+        print "too short",beg_i,end_i
+        return None
+    
+    #fit linear and bilinear models
+    mod1=scipy.stats.linregress(range(beg_i,end_i),thrs[beg_i:end_i])
+    mod1_err=(end_i-beg_i)*mod1[-1]
+    #print mod1_err
+    cur_err=float("inf")
+    cur_mods=[]
+    cur_i=-1
+    for i in range(beg_i+1,end_i-1):
+        moda=scipy.stats.linregress(range(beg_i,i),thrs[beg_i:i])
+        modb=scipy.stats.linregress(range(i,end_i),thrs[i:end_i])
+        modab_err=(i-beg_i)*moda[-1]+(end_i-i)*modb[-1]
+        if modab_err <cur_err:
+            cur_err=modab_err
+            cur_mods=(moda,modb)
+            cur_i=i
+    print mod1_err,cur_err,beg_i,cur_i,end_i
+
+    if mod1_err<cur_err*.01:
+        print "no improvement"
+        return None
+    moda,modb=cur_mods
+    pylab.figure()
+    pylab.plot(thrs)
+    pylab.plot([0,len(thrs)],[mod1[1],mod1[1]+mod1[0]*len(thrs)])
+    pylab.plot([0,len(thrs)],[moda[1],moda[1]+moda[0]*len(thrs)])
+    pylab.plot([0,len(thrs)],[modb[1],modb[1]+modb[0]*len(thrs)])
+    opt_thr=thrs[cur_i]
+    #We've got the optimal threshold - now break the clusters
+    print opt_thr,cur_i, mod1_err/cur_err,"improvement"
+    res_clus=[]
+    while cur_clusts!=[]:
+        cc=cur_clusts.pop(0)
+        if cc[2][0]>opt_thr:
+            res_clus.append(cc[0:2])
+        else: # need to break up the cluster
+            cur_clusts=cc[2][1]+cur_clusts
+    #now make a new matrix
+    Nnew=numpy.zeros(N.shape)
+    for i in range(N.shape[0]): #for every row
+        for beg,end in res_clus: # for every cluster
+            x=numpy.mean(N[i,beg:end+1]) #take the average value in the cluster
+            for j in range(beg,end+1):
+                Nnew[i,j]=x
+                Nnew[j,i]=x
+    return Nnew,res_clus
+            
+
+            
+def dynamic_opt(m):
+    s_i=[m[0,1]]
+    b_i=[numpy.array([1,1])]
+    j_i=[1]
+    
+    for i in range(2,m.shape[0]): #we're extending to i-th position
+        max_score= sum_triangle(m,0,i)#basic score coming from a single big cluster
+        max_vec= numpy.array([1]*(i+1))
+        max_j=i
+        for j,s,b in zip(j_i,s_i,b_i): #j-1 is the position we're considering now
+        #try extending
+            cur_s=s+sum_triangle(m,j,i)+sum_rectangle(m,j,i,b)
+            #print i,j,s,b,cur_s #list(enumerate(zip(s_i,b_i)))
+            if cur_s>max_score:
+                #print "MAX",i,j
+                max_score=cur_s
+                max_vec=numpy.array(list(-1*b)+(i-len(b)+1)*[1])
+                max_j=j
+
+        s_i.append(max_score)
+        b_i.append(max_vec)
+        j_i.append(i)
+        if i%20==0:
+            print "I",i,s_i[-1],len(b_i[-1]),j_i[-1]
+    return to_idx(b_i[-1])
+
+def dynamic_hier(m,thr=THR):
+    b,e=0,m.shape[0]-1
+    res=[]
+    working=[(b,e)]
+    while working:
+        b,e=working.pop(0)
+        res.append((b,e))
+        if abs(e-b)>thr: 
+            m_sub=m[b:e+1,b:e+1]
+            for bb,ee in dynamic_opt(m_sub-numpy.mean(m_sub)):
+                working.append((b+bb,b+ee))
+    return res
+    
+def to_idx(b):
+    idx= [0]+[i for i in  range(len(b)-1) if b[i]*b[i+1]==-1]+[len(b)-1]
+    bes=[(idx[i],idx[i+1]) for i in range(len(idx)-1)]
+    return bes
+        
+def to_file(bes):
+    for i,(b,e) in enumerate(bes):
+        print  "chr %d: %d %d"%(i,b,e)
+
+if __name__=="__main__":
+    import sys,argparse
+    #f=sys.argv[1] #
+    f="/home/bartek/Dropbox/code/hic-pearson/fetched/1618/4_sum_normed.npy"
+    #f="/home/bartek/Dropbox/code/hic-pearson/fetched/34/3R_sum_normed.npy"
+    import time
+    M=numpy.load(f)
+    print "Loading done"
+    M_c=numpy.clip(numpy.nan_to_num(M),-10,M.shape[0]/10) #clipped M matrix
+    print "clipping done"
+    #S=smooth(M_c)
+    #print "smoothing done"
+    Sf=smooth_fast(M_c,width=1)
+    print "fast smoothing done"
+    #N=normalize(S)
+    Nf=normalize(Sf)
+    print "Normalization done"
+    #C=pearson(N)
+    #print "Pearson done"
+    Cf=pearson_fast(Nf)
+    print "Pearson fast done"
+    
+
+
+

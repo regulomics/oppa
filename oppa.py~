@@ -1,0 +1,10 @@
+from functions import *
+import argparse
+
+if __name__=="__main__":
+    parser = argparse.ArgumentParser(description='OPPA - Optimal PCA-like Profile Aggregation')
+    parser.add_argument("--data", metavar='data', type=str, help='A normalized Hi-C matrix for a single chromosome in .npy format')
+    
+    args = parser.parse_args()
+    print args.data
+    
